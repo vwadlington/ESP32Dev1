@@ -2,12 +2,6 @@
 
 This project template can be used to build an ESP-IDF application in GitHub Codespaces, then flash it to the development board and monitor the output right from the web browser. No tools need to be installed locally.
 
-> [!NOTE]
-> GitHub Codespaces is free for individuals for a limited time per month. See https://github.com/features/codespaces#pricing for details.
-
-> [!WARNING]
-> This repository is a work in progress. If you run into any issue, please report it at https://github.com/espressif/vscode-extension-codespace-test/issues!
-
 ## How to Use the Template
 
 1. In https://github.com/espressif/vscode-extension-codespace-test, press the dropdown on the green "Use this template" button on top right, and select "Open in a codespace".
