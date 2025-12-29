@@ -1,12 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
-# 1. Pull in the IDF framework
+# 1. Start the project first
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(hello_world)
 
-# 2. Get the base version from your version.txt
+# 2. Get the base version and Git hash
 file(STRINGS "version.txt" BASE_VER)
-
-# 3. Manually grab that 7-character hash you saw in the terminal
 execute_process(
     COMMAND git rev-parse --short HEAD
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -15,12 +14,16 @@ execute_process(
     ERROR_QUIET
 )
 
-# 4. Combine them (Result looks like: 1.0.0-g7a1b2c3)
+# 3. Apply the custom version to the project AFTER it is defined
 if(GIT_HASH)
     set(APP_PROJECT_VER "${BASE_VER}-g${GIT_HASH}")
 else()
     set(APP_PROJECT_VER "${BASE_VER}")
 endif()
 
-# 5. Define the project
-project(hello_world)
+# This is the "magic" line that forces the app to use our version
+set(PROJECT_VER "${APP_PROJECT_VER}")
+
+message(STATUS "******************************************")
+message(STATUS "FINAL APP VERSION: ${PROJECT_VER}")
+message(STATUS "******************************************")
