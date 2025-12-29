@@ -31,5 +31,6 @@
 			]
 		}
 	},
-	"runArgs": ["--privileged"]
+	"runArgs": ["--privileged"],
+	"postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}"
 }
