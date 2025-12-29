@@ -1,13 +1,13 @@
-# The following five lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.16)
 
-# 1. Read the version from the file in the same folder
+# Include the ESP-IDF project logic first
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# Read the version from your file
 file(STRINGS "version.txt" PROJECT_VER)
-# 2. Tell ESP-IDF to use this version for the app metadata
+
+# Set the version (This will now allow the build system to append the git hash)
 set(APP_PROJECT_VER "${PROJECT_VER}")
 
-set(COMPONENTS main)
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Define the project
 project(hello_world)
-cmake_minimum_required(VERSION 3.16)
