@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-# 1. Start the project first
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(hello_world)
-
-# 2. Get the base version and Git hash
+# 1. Get version and hash BEFORE anything else
 file(STRINGS "version.txt" BASE_VER)
 execute_process(
     COMMAND git rev-parse --short HEAD
@@ -14,16 +10,16 @@ execute_process(
     ERROR_QUIET
 )
 
-# 3. Apply the custom version to the project AFTER it is defined
-if(GIT_HASH)
-    set(APP_PROJECT_VER "${BASE_VER}-g${GIT_HASH}")
-else()
-    set(APP_PROJECT_VER "${BASE_VER}")
-endif()
+set(FULL_VER "${BASE_VER}-g${GIT_HASH}")
 
-# This is the "magic" line that forces the app to use our version
-set(PROJECT_VER "${APP_PROJECT_VER}")
+# 2. Set these as CACHE variables (this forces them into the build system's memory)
+set(PROJECT_VER "${FULL_VER}" CACHE STRING "" FORCE)
+set(APP_PROJECT_VER "${FULL_VER}" CACHE STRING "" FORCE)
 
-message(STATUS "******************************************")
-message(STATUS "FINAL APP VERSION: ${PROJECT_VER}")
-message(STATUS "******************************************")
+# 3. Now load the project
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(hello_world)
+
+message(STATUS "--------------------------------------------")
+message(STATUS "FORCING BINARY VERSION: ${FULL_VER}")
+message(STATUS "--------------------------------------------")
