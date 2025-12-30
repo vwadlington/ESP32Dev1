@@ -1,0 +1,10 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x4000,
+otadata,  data, ota,     ,        0x2000,
+phy_init, data, phy,     ,        0x1000,
+# OTA App Slot 0 (5MB)
+ota_0,    app,  ota_0,   ,        5M,
+# OTA App Slot 1 (5MB)
+ota_1,    app,  ota_1,   ,        5M,
+# Storage for UI Assets (Images, Fonts, etc. - ~5.8MB)
+storage,  data, spiffs,  ,        0x5D9000,
