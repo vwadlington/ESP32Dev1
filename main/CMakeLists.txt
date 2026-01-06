@@ -1,2 +1,3 @@
-idf_component_register(SRCS "hello_world_example_main.c"
-                       INCLUDE_DIRS ".")
+idf_component_register(SRCS "main.c"
+                       INCLUDE_DIRS "."
+                       REQUIRES log espressif__esp32_s3_lcd_ev_board gui)
