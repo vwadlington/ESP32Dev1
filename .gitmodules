@@ -1,0 +1,3 @@
+[submodule "components/minigui"]
+	path = components/minigui
+	url = https://github.com/vwadlington/minigui
