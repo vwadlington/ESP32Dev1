@@ -9,6 +9,9 @@ void app_main(void)
     /* Initialize display */
     bsp_display_start();
     
-    //create_ui();
-    create_minigui();
+    if (bsp_display_lock(0))
+    {
+        create_minigui();
+    }
+    bsp_display_unlock();
 }
