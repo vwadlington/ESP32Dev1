@@ -11,7 +11,7 @@ void app_main(void)
     
     if (bsp_display_lock(0))
     {
-        create_minigui();
+        minigui_init();
     }
     bsp_display_unlock();
 }

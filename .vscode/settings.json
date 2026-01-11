@@ -6,10 +6,11 @@
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
   },
-  "idf.flashType": "JTAG",
+  "idf.flashType": "UART",
   "idf.port": "/dev/ttyACM0",
   "github.copilot.enable": {
     "*": false
   },
-  "idf.monitorNoReset": true
+  "idf.monitorNoReset": true,
+  "workbench.quickOpen.closeOnFocusLost": false
 }

@@ -3,6 +3,7 @@ build/
 
 # Logic/State files
 sdkconfig.old
+sdkconfig.old2
 dependencies.lock
 
 # Managed components (external libraries downloaded automatically)

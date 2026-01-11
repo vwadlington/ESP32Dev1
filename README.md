@@ -1,40 +1,60 @@
-# ESP-IDF Template project for GitHub Codespaces 
+im tyring to create a professional looking ESP-IDF framework project, using an ESP32-S3 to contol other smart home devices.
 
-This project template can be used to build an ESP-IDF application in GitHub Codespaces, then flash it to the development board and monitor the output right from the web browser. No tools need to be installed locally.
+I'm using the ESP32-S3-LCD-EV-Board2 with sub board 3 (800x480 RGB Screen, GT1151 touch driver)
 
-## How to Use the Template
+I'm using GitHub as my repository "https://github.com/vwadlington/ESP32Dev1"
 
-1. In https://github.com/espressif/vscode-extension-codespace-test, press the dropdown on the green "Use this template" button on top right, and select "Open in a codespace".
+I plan to use the main folder for reading from sensors and communicating with other devices (wifi)
 
-2. The codespace will open and start up. This initial step might take a couple of minutes.
+for graphics
+-I will use lvgl initialized by my BSP "https://github.com/espressif/esp-bsp/tree/master/bsp/esp32_s3_lcd_ev_board" (bsp_display_start())
+-I will create a reusable independent component "minigui" it will have its own GitHub repo to possibly be reused on other projects (https://github.com/vwadlington/minigui)
+-minigui will have multiple screens on a single display setup
+-minigui.c will be the screen manager using dynamic management and non persistent screens to save memory
+-currently there would be three screens (screen_home, screen_logs, and screen_settings) all under a screen folder and having their own .c files and more screens possibly in the future
+--screen_home will have a outside temp, inside temp, weather outlook
+--screen_logs will have access to an internal logs file in a table/grid view with a filter for log type (ESP_LOG/LVGL/USER)
+--screen_settings will have screen brightness, wifi, and maybe more
 
-3. To build the example project, press the :wrench: icon on the bottom bar.
+for logs
+-i would like to grab LVGL logs and send them to an internal logs file
+-i would like to grab ESP_LOG events and send them to an internal logs file
+-i would like to display the internal logs file with a filter on the logs screen
 
-   Alternatively, press F1 to show all the commands, then type "idf build". Select "ESP-IDF: Build your project" command. The last used commands are kept at the top, so you don't need to type the name each time.
-
-4. When the build is done, open the commands list again by pressing F1, and look for "ESP-IDF-Web Flash". Select this command.
-
-   You will receive several prompts:
-
-   - Pick the workspace folder: select the only available option (`/workspaces`)
-
-   - Web browser pop up will prompt you to select the serial port. Pick the port of your development board.
-
-   - Select baud rate: pick the highest (921600). Retry with a lower one in case flashing fails.
-
-   Once you see "ESP-IDF Web Flashing done" message, it means that this step is completed.
-
-5. Open the commands list (F1) and select "ESP-IDF-Web Monitor". Select this command.
-
-   When prompted, pick:
-
-   - The port of the development board
-
-   - The baud rate: select 115200
-
-   The monitor should open and you should see "Hello, World" being printed every second.
-
-## Hardware Required
-
-Any ESP32, ESP32-C, ESP32-H, ESP32-S or ESP32-P series development board. Make sure you have serial port drivers installed for this board.
-
+the project currently has the following structure:
+.devcontainer
+.github
+.vscode
+build
+components
+-minigui
+--include
+---screens
+----screen_home.h
+----screen_logs.h
+----screen_settings.h
+---minigui.h
+--src
+---screens
+----screen_home.c
+----screen_logs.c
+----screen_settings.c
+---minigui.c
+--.gitignore
+--CMakeLists.txt
+--LICENSE
+--README.md
+main
+-CMakeLists.txt
+-idf_component.yml
+-main.c
+managed_components
+-BSP generated
+.gemini-context.md
+.gitignore
+.gitmodules
+CMakeLists.txt
+dependencies.lock
+partitions.csv
+README.md (this file)
+sdkconfig
