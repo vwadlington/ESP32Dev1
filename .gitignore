@@ -1,12 +1,21 @@
-# Build directory
+# --- ESP-IDF Defaults ---
 build/
-
-# Logic/State files
 sdkconfig.old
 sdkconfig.old2
 dependencies.lock
-
-# Managed components (external libraries downloaded automatically)
 managed_components/
 
-# We DO NOT ignore 'sdkconfig' itself so our settings are saved!
+# --- Project Specific Exports ---
+# Ignores the files used for Gemini context sharing
+*_codebase.txt
+
+# --- IDE & System Files ---
+.devcontainer/
+.vscode/
+.DS_Store
+Thumbs.db
+*.py[cod]
+__pycache__/
+
+# --- Note on sdkconfig ---
+# We are intentionally NOT ignoring 'sdkconfig' to preserve board settings.
