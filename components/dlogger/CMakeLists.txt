@@ -1,4 +1,4 @@
 idf_component_register(SRCS "dlogger.c"
                     INCLUDE_DIRS "include"
-                    REQUIRES "storage"
+                    REQUIRES "storage" spiffs lvgl freertos
                     PRIV_REQUIRES esp_timer log lvgl__lvgl esp_ringbuf)

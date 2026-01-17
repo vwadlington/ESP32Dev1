@@ -1,58 +1,126 @@
 #include "app_bridge.h"
-#include "minigui.h"
 #include "dlogger.h"
 #include <string.h>
 #include <stdio.h>
-#include "esp_log.h" // For esp_log_timestamp()
+#include <stdlib.h>
+
+// ============================================================================
+// STATIC HELPERS - MINIMAL STACK USAGE
+// ============================================================================
 
 /**
- * @brief Private bridge function that follows the minigui_log_provider_t signature.
+ * @brief Check if raw log passes filter (minimal stack)
  */
-static void log_provider_impl(const char *filter, lv_obj_t *table, uint16_t max_rows) {
-    const char *path = dlogger_get_current_log_filepath();
-    FILE *f = fopen(path, "r");
-    if (!f) return;
-
-    // We no longer set headers here if you use the "Two-Table" static header trick
-    char line[256];
-    uint16_t row = 0; // Start at 0 if the data table is separate from header
-
-    while (fgets(line, sizeof(line), f) && row < max_rows) {
-        char extracted_tag[16] = "SYS";
-        char *message_body = line;
-
-        // Extract Tag (e.g., [LVGL])
-        if (line[0] == '[') {
-            char *closing = strchr(line, ']');
-            if (closing) {
-                size_t tag_len = closing - (line + 1);
-                if (tag_len < sizeof(extracted_tag)) {
-                    strncpy(extracted_tag, line + 1, tag_len);
-                    extracted_tag[tag_len] = '\0';
-                    message_body = closing + 1;
-                }
-            }
-        }
-
-        // Filtering Logic
-        if (strcmp(filter, "ALL") == 0 || strcmp(extracted_tag, filter) == 0) {
-            // Get system time in ms
-            char time_str[12];
-            snprintf(time_str, sizeof(time_str), "%lu", (unsigned long)esp_log_timestamp());
-
-            lv_table_set_cell_value(table, row, 0, time_str);      // Column 0: TIME
-            lv_table_set_cell_value(table, row, 1, extracted_tag); // Column 1: TAG
-            lv_table_set_cell_value(table, row, 2, message_body);  // Column 2: MESSAGE
-            row++;
-        }
+static bool log_passes_filter(const dlogger_entry_t *raw, const char *filter) {
+    if (!filter || strcmp(filter, "ALL") == 0) {
+        return true;
     }
-    fclose(f);
+    
+    // Convert source to string without function call overhead
+    const char* source_str = "?";
+    switch(raw->source) {
+        case LOG_SOURCE_ESP:  source_str = "ESP"; break;
+        case LOG_SOURCE_LVGL: source_str = "LVGL"; break;
+        case LOG_SOURCE_USER: source_str = "USER"; break;
+    }
+    
+    return (strcmp(filter, source_str) == 0);
 }
 
-void app_bridge_init(void) {
-    // Connect the log provider
-    minigui_register_log_provider(log_provider_impl);
+/**
+ * @brief Format timestamp (minimal stack - uses preallocated buffer)
+ */
+static void format_timestamp(uint32_t timestamp, char *buf) {
+    snprintf(buf, 16, "%lu", (unsigned long)timestamp);
+}
+
+/**
+ * @brief Format source (minimal stack - direct assignment)
+ */
+static void format_source(uint8_t source, char *buf) {
+    switch(source) {
+        case LOG_SOURCE_ESP:  strcpy(buf, "ESP"); break;
+        case LOG_SOURCE_LVGL: strcpy(buf, "LVGL"); break;
+        case LOG_SOURCE_USER: strcpy(buf, "USER"); break;
+        default:              strcpy(buf, "?"); break;
+    }
+}
+
+/**
+ * @brief Format level (minimal stack - direct assignment)
+ */
+static void format_level(uint8_t level, char *buf) {
+    switch(level) {
+        case LOG_LEVEL_ERROR: strcpy(buf, "E"); break;
+        case LOG_LEVEL_WARN:  strcpy(buf, "W"); break;
+        case LOG_LEVEL_INFO:  strcpy(buf, "I"); break;
+        case LOG_LEVEL_DEBUG: strcpy(buf, "D"); break;
+        default:              strcpy(buf, "?"); break;
+    }
+}
+
+/**
+ * @brief Clean message in-place (no extra buffers)
+ */
+static void clean_message_inplace(char *msg) {
+    int len = strlen(msg);
+    while (len > 0 && (msg[len-1] == '\n' || msg[len-1] == '\r')) {
+        msg[--len] = '\0';
+    }
+}
+
+// ============================================================================
+// PUBLIC API - MINIMAL STACK VERSION
+// ============================================================================
+size_t app_bridge_get_formatted_logs(formatted_log_entry_t *logs, 
+                                     size_t max_logs, 
+                                     const char *filter)
+{
+    if (!logs || max_logs == 0) return 0;
     
-    // You can also connect your brightness callback here later!
-    // minigui_register_brightness_cb(hardware_led_set_brightness);
+    // Allocate buffer for raw logs
+    dlogger_entry_t *raw_logs = (dlogger_entry_t*)malloc(
+        max_logs * sizeof(dlogger_entry_t));
+    
+    if (!raw_logs) return 0;
+    
+    // Get raw logs from dlogger (already in reverse chronological order)
+    size_t raw_count = dlogger_get_raw_entries(raw_logs, max_logs);
+    size_t formatted_count = 0;
+    
+    // Process each raw log
+    for (size_t i = 0; i < raw_count && formatted_count < max_logs; i++) {
+        const dlogger_entry_t *raw = &raw_logs[i];
+        
+        // Apply filter
+        if (!log_passes_filter(raw, filter)) {
+            continue;
+        }
+        
+        // Format the log entry
+        formatted_log_entry_t *fmt = &logs[formatted_count];
+        
+        // Format timestamp
+        format_timestamp(raw->timestamp, fmt->timestamp);
+        
+        // Format source and level
+        format_source(raw->source, fmt->source);
+        format_level(raw->level, fmt->level);
+        
+        // Copy and clean message
+        strncpy(fmt->message, raw->message, sizeof(fmt->message) - 1);
+        fmt->message[sizeof(fmt->message) - 1] = '\0';
+        clean_message_inplace(fmt->message);
+        
+        formatted_count++;
+    }
+    
+    free(raw_logs);
+    return formatted_count;
+}
+
+void app_bridge_init(void)
+{
+    // Bridge initialization
+    // Note: No stack allocation here
 }

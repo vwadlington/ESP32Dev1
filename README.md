@@ -44,3 +44,51 @@ Captures and redirects all system and UI output to a circular file system.
 │   ├── main.c         # Hardware init and app orchestration
 │   └── idf_component  # Managed BSP dependencies
 └── partitions.csv     # Custom flash layout (16MB config)
+
+🏗️ Component Architecture
+Layered Design Principle
+The project follows a strict layered architecture with clear separation of concerns:
+
+text
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│      UI         │      │     Bridge      │      │      Data       │
+│   (minigui)     │◄────►│   (app_bridge)  │◄────►│   (dlogger)     │
+│   Presentation  │      │  Data Adapter   │      │   Collection    │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+        │                        │                        │
+        ▼                        ▼                        ▼
+  LVGL Widgets           Formatted Data              Raw Logs
+  User Interactions      Filtering/Transform        File Storage
+Key Architectural Rules:
+Unidirectional Data Flow: Data flows from Data → Bridge → UI
+
+No Cross-Layer Dependencies: Each layer has clearly defined interfaces
+
+UI Agnostic Data Layer: dlogger works without any UI framework
+
+Adapter Pattern: app_bridge converts between data formats
+
+Component Responsibilities:
+Component	Layer	Responsibility	Dependencies
+minigui	UI	LVGL widgets, screens, user events	LVGL only
+app_bridge	Bridge	Data formatting, filtering, transformation	dlogger (data), provides to UI
+dlogger	Data	Log collection, storage, raw data APIs	ESP-IDF, storage
+storage	Data	Filesystem management, SPIFFS	ESP-IDF
+Data Flow Example (Log Display):
+Collection: ESP/LVGL logs → dlogger buffer/file
+
+Retrieval: app_bridge requests raw logs from dlogger
+
+Transformation: app_bridge formats, filters, truncates logs
+
+Display: screen_logs receives formatted data → LVGL table
+
+This architecture ensures:
+
+Reusability: minigui can be used with different data sources
+
+Testability: Each layer can be tested independently
+
+Maintainability: Clear boundaries reduce coupling
+
+Scalability: Easy to add new data sources or UI screens

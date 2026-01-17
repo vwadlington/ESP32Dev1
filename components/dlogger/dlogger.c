@@ -1,260 +1,463 @@
+#include "dlogger.h"
 #include <stdio.h>
-#include <string.h>
 #include <stdarg.h>
-#include <dirent.h>
-#include <sys/stat.h>
+#include <string.h>
+#include <inttypes.h>
+
+#include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/ringbuf.h"
-#include "esp_timer.h"
-#include "esp_log.h"
-#include "storage.h"
-#include "dlogger.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 
-// --- Configuration ---
-#define MAX_LOG_FILES 2
-#define MAX_LOG_FILE_SIZE (1 * 1024 * 1024) // 1MB
-#define LOG_FILE_PREFIX "_LogFile.txt"
+// ============================================================================
+// INTERNAL CONSTANTS AND TYPES
+// ============================================================================
 
-// RAM Buffer Settings
-#define LOG_RINGBUF_SIZE (8 * 1024)   // 8KB Buffer
-#define LOG_TASK_STACK   (4 * 1024)   // 4KB Stack for Writer Task
-#define LOG_TASK_PRIO    (tskIDLE_PRIORITY + 2) // Low priority background task
+// Buffer configuration
+#define LOG_BUFFER_CAPACITY  512    // 512 entries per buffer
+#define FLUSH_INTERVAL_MS    500    // Flush every 500ms
+#define MAX_MESSAGE_LENGTH   188    // Must match struct definition
 
-static const char *TAG = "dlogger";
+// Internal buffer context
+typedef struct {
+    dlogger_entry_t *buffer_a;      ///< First buffer
+    dlogger_entry_t *buffer_b;      ///< Second buffer  
+    size_t capacity;                ///< Max entries per buffer
+    volatile uint8_t active;        ///< Active buffer (0=buffer_a, 1=buffer_b)
+    volatile size_t fill_idx;       ///< Entries in active buffer
+    volatile bool flush_pending;    ///< True when inactive buffer needs flushing
+    SemaphoreHandle_t mutex;        ///< Mutex for thread-safe operations
+    TaskHandle_t flush_task;        ///< Background task handle
+    volatile bool task_running;     ///< Controls background task
+} dlogger_buffer_ctx_t;
 
-// --- Globals ---
-static RingbufHandle_t log_ringbuf = NULL;
-static char current_log_filepath[128] = {0}; // Stores full path now for easier access
+// ============================================================================
+// STATIC VARIABLES
+// ============================================================================
 
-// --- Helper Functions ---
+static const char *TAG = "DLOGGER";
+static char current_log_path[64] = "/storage/latest.log";
+static FILE *log_file_handle = NULL;
 
-static void construct_filepath(const char *filename, char *filepath) {
-    snprintf(filepath, 128, "%s/%s", storage_get_base_path(), filename);
+static dlogger_buffer_ctx_t dlogger_ctx = {
+    .buffer_a = NULL,
+    .buffer_b = NULL,
+    .capacity = LOG_BUFFER_CAPACITY,
+    .active = 0,
+    .fill_idx = 0,
+    .flush_pending = false,
+    .mutex = NULL,
+    .flush_task = NULL,
+    .task_running = false
+};
+
+// ============================================================================
+// INTERNAL HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * @brief Convert log source to string (for file output only)
+ */
+static const char* source_to_string(uint8_t source) {
+    switch(source) {
+        case LOG_SOURCE_ESP:  return "ESP";
+        case LOG_SOURCE_LVGL: return "LVGL";
+        case LOG_SOURCE_USER: return "USER";
+        default:              return "UNKNOWN";
+    }
 }
 
-// Finds the oldest file to delete when we need to rotate
-static esp_err_t get_oldest_logfile(char *oldest_logfile) {
-    DIR *dir = opendir(storage_get_base_path());
-    if (!dir) return ESP_FAIL;
+/**
+ * @brief Convert log level to character (for file output only)
+ */
+static char level_to_char(uint8_t level) {
+    switch(level) {
+        case LOG_LEVEL_ERROR: return 'E';
+        case LOG_LEVEL_WARN:  return 'W';
+        case LOG_LEVEL_INFO:  return 'I';
+        case LOG_LEVEL_DEBUG: return 'D';
+        default:              return '?';
+    }
+}
 
-    struct dirent *entry;
-    long long min_timestamp = -1;
-    int log_file_count = 0;
-    char found_filename[64] = {0};
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, LOG_FILE_PREFIX)) {
-            log_file_count++;
-            long long timestamp = atoll(entry->d_name);
-            if (min_timestamp == -1 || timestamp < min_timestamp) {
-                min_timestamp = timestamp;
-                strcpy(found_filename, entry->d_name);
-            }
+/**
+ * @brief Ensure log file is open (for internal file writing only)
+ */
+static void ensure_log_file_open(void) {
+    if (log_file_handle == NULL) {
+        log_file_handle = fopen(current_log_path, "a");
+        if (log_file_handle) {
+            setvbuf(log_file_handle, NULL, _IOFBF, 4096);
         }
     }
-    closedir(dir);
-
-    if (log_file_count >= MAX_LOG_FILES && found_filename[0] != '\0') {
-        strcpy(oldest_logfile, found_filename);
-        return ESP_OK;
-    }
-
-    return ESP_ERR_NOT_FOUND;
 }
 
-// Creates a new file based on current timestamp
-static esp_err_t create_new_logfile(void) {
-    long long timestamp = esp_timer_get_time() / 1000;
-    char filename[64];
-    snprintf(filename, sizeof(filename), "%lld%s", timestamp, LOG_FILE_PREFIX);
-    
-    // Check if we need to rotate (delete old)
-    char oldest_logfile[64];
-    if (get_oldest_logfile(oldest_logfile) == ESP_OK) {
-        char filepath_to_delete[128];
-        construct_filepath(oldest_logfile, filepath_to_delete);
-        ESP_LOGI(TAG, "Rotating: Deleting %s", filepath_to_delete);
-        remove(filepath_to_delete);
+/**
+ * @brief Close log file
+ */
+static void close_log_file(void) {
+    if (log_file_handle) {
+        fclose(log_file_handle);
+        log_file_handle = NULL;
     }
-
-    // Set new current path
-    construct_filepath(filename, current_log_filepath);
-    
-    FILE *f = fopen(current_log_filepath, "w");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to create: %s", current_log_filepath);
-        return ESP_FAIL;
-    }
-    fclose(f);
-    ESP_LOGI(TAG, "New log file created: %s", current_log_filepath);
-
-    return ESP_OK;
 }
 
-// Scans for the latest existing file to append to
-static esp_err_t find_latest_logfile(void) {
-    DIR *dir = opendir(storage_get_base_path());
-    if (!dir) return ESP_FAIL;
+/**
+ * @brief Write single entry to file (internal use only)
+ */
+static void write_entry_to_file(const dlogger_entry_t *entry) {
+    ensure_log_file_open();
+    if (!log_file_handle || !entry) return;
+    
+    fprintf(log_file_handle, "%" PRIu32 " [%s][%c] %s\n",
+            entry->timestamp,
+            source_to_string(entry->source),
+            level_to_char(entry->level),
+            entry->message);
+    
+    fflush(log_file_handle);
+}
 
-    struct dirent *entry;
-    long long max_timestamp = -1;
-    char found_filename[64] = {0};
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, LOG_FILE_PREFIX)) {
-            long long timestamp = atoll(entry->d_name);
-            if (max_timestamp == -1 || timestamp > max_timestamp) {
-                max_timestamp = timestamp;
-                strcpy(found_filename, entry->d_name);
-            }
+/**
+ * @brief Flush buffer to file (internal use only)
+ */
+static void flush_buffer_to_file(dlogger_entry_t *buffer, size_t count) {
+    if (!buffer || count == 0) return;
+    
+    for (size_t i = 0; i < count; i++) {
+        if (buffer[i].timestamp != 0) {
+            write_entry_to_file(&buffer[i]);
         }
     }
-    closedir(dir);
-
-    if (found_filename[0] != '\0') {
-        construct_filepath(found_filename, current_log_filepath);
-        ESP_LOGI(TAG, "Appending to: %s", current_log_filepath);
-        return ESP_OK;
-    }
-
-    return ESP_ERR_NOT_FOUND;
+    
+    memset(buffer, 0, count * sizeof(dlogger_entry_t));
 }
 
-// --- Background Task ---
+// ============================================================================
+// BUFFER MANAGEMENT
+// ============================================================================
 
-static void dlogger_task(void *arg) {
-    char *item;
-    size_t item_size;
-
-    while (1) {
-        // 1. Wait for data in the Ring Buffer (Timeout 1s to allow periodic checks)
-        item = (char *)xRingbufferReceive(log_ringbuf, &item_size, pdMS_TO_TICKS(1000));
+/**
+ * @brief Background flush task function
+ */
+static void flush_task_func(void *arg) {
+    while (dlogger_ctx.task_running) {
+        bool should_flush = false;
+        dlogger_entry_t *buffer_to_flush = NULL;
+        size_t entries_to_flush = 0;
         
-        if (item != NULL) {
-            // 2. Check file size limit before writing
-            struct stat st;
-            if (stat(current_log_filepath, &st) == 0) {
-                if (st.st_size >= MAX_LOG_FILE_SIZE) {
-                    create_new_logfile(); 
-                }
-            }
-
-            // 3. Write to file
-            FILE *f = fopen(current_log_filepath, "a");
-            if (f != NULL) {
-                fwrite(item, 1, item_size, f);
-                // We add a newline if the item didn't have one, or just trust the logger.
-                // Usually dlogger_log adds a newline.
-                fclose(f);
-            } else {
-                // If we can't open the file, we just drop the log to prevent hanging
-                // But we print to console to warn
-                printf("dlogger: Disk Write Failed!\n");
-            }
-
-            // 4. Return item to buffer
-            vRingbufferReturnItem(log_ringbuf, (void *)item);
+        // Check if flush is needed
+        xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+        if (dlogger_ctx.flush_pending) {
+            uint8_t buffer_to_flush_idx = !dlogger_ctx.active;
+            buffer_to_flush = (buffer_to_flush_idx == 0) ? 
+                             dlogger_ctx.buffer_a : dlogger_ctx.buffer_b;
+            entries_to_flush = dlogger_ctx.capacity;
+            should_flush = true;
+            dlogger_ctx.flush_pending = false;
         }
+        xSemaphoreGive(dlogger_ctx.mutex);
+        
+        // Perform flush if needed
+        if (should_flush) {
+            flush_buffer_to_file(buffer_to_flush, entries_to_flush);
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(FLUSH_INTERVAL_MS));
     }
+    
+    vTaskDelete(NULL);
 }
 
-// --- Public API ---
-
-esp_err_t dlogger_log(const char *format, ...) {
-    if (log_ringbuf == NULL) return ESP_ERR_INVALID_STATE;
-
-    char buffer[256]; // Temp stack buffer
-    va_list args;
-    va_start(args, format);
-    int len = vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-
-    if (len < 0) return ESP_FAIL;
-
-    // Ensure newline
-    if (len < sizeof(buffer) - 2 && buffer[len-1] != '\n') {
-        strcat(buffer, "\n");
-        len++;
-    }
-
-    // Send to Ring Buffer (Wait 0 ticks - if full, drop log to prevent blocking UI)
-    BaseType_t res = xRingbufferSend(log_ringbuf, buffer, len, 0);
+/**
+ * @brief Add entry to active buffer (thread-safe)
+ */
+static bool buffer_add_entry(uint8_t source, uint8_t level, const char *message) {
+    bool success = false;
     
-    if (res != pdTRUE) {
-        // Buffer full - optionally count dropped logs
+    xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+    
+    // Check if buffer is full
+    if (dlogger_ctx.fill_idx >= dlogger_ctx.capacity) {
+        if (dlogger_ctx.flush_pending) {
+            // Both buffers busy - drop entry
+            success = false;
+        } else {
+            // Swap buffers
+            dlogger_ctx.active = !dlogger_ctx.active;
+            dlogger_ctx.fill_idx = 0;
+            dlogger_ctx.flush_pending = true;
+            success = true;
+        }
+    } else {
+        success = true;
+    }
+    
+    // Add entry if we have space
+    if (success) {
+        dlogger_entry_t *active_buffer = (dlogger_ctx.active == 0) ? 
+                                        dlogger_ctx.buffer_a : dlogger_ctx.buffer_b;
+        
+        dlogger_entry_t *entry = &active_buffer[dlogger_ctx.fill_idx];
+        entry->timestamp = (uint32_t)(esp_timer_get_time() / 1000);
+        entry->source = source;
+        entry->level = level;
+        
+        // Copy message with null termination
+        strncpy(entry->message, message, MAX_MESSAGE_LENGTH - 1);
+        entry->message[MAX_MESSAGE_LENGTH - 1] = '\0';
+        
+        dlogger_ctx.fill_idx++;
+    }
+    
+    xSemaphoreGive(dlogger_ctx.mutex);
+    return success;
+}
+
+// ============================================================================
+// LOG HANDLERS (NO UI DEPENDENCIES)
+// ============================================================================
+
+/**
+ * @brief ESP-IDF log handler - parses level from ESP log format
+ */
+static int esp_log_handler(const char *format, va_list args) {
+    char message[256];
+    vsnprintf(message, sizeof(message), format, args);
+    
+    // Parse ESP log level from first character
+    // Format: "E (1234) tag: message", "W (1234) tag: message", etc.
+    uint8_t log_level = LOG_LEVEL_INFO;
+    if (message[0] == 'E') {
+        log_level = LOG_LEVEL_ERROR;
+    } else if (message[0] == 'W') {
+        log_level = LOG_LEVEL_WARN;
+    } else if (message[0] == 'I') {
+        log_level = LOG_LEVEL_INFO;
+    } else if (message[0] == 'D' || message[0] == 'V') {
+        log_level = LOG_LEVEL_DEBUG;
+    }
+    
+    // Add to buffer (skip the printf return for actual logging)
+    buffer_add_entry(LOG_SOURCE_ESP, log_level, message);
+    
+    // Pass through to original output
+    return vprintf(format, args);
+}
+
+/**
+ * @brief LVGL v9 log handler - maps LVGL levels to our levels
+ */
+static void lvgl_log_handler(lv_log_level_t lvgl_level, const char *buf) {
+    uint8_t log_level = LOG_LEVEL_INFO;
+    
+    // Map LVGL levels based on observed serial output:
+    // level 0 = Trace, 1 = Info, 2 = Warn, 3 = Error, 4 = User
+    if (lvgl_level == 3) {          // LV_LOG_LEVEL_ERROR
+        log_level = LOG_LEVEL_ERROR;
+    } else if (lvgl_level == 2) {   // LV_LOG_LEVEL_WARN
+        log_level = LOG_LEVEL_WARN;
+    } else if (lvgl_level == 1) {   // LV_LOG_LEVEL_INFO
+        log_level = LOG_LEVEL_INFO;
+    } else if (lvgl_level == 4) {   // LV_LOG_LEVEL_USER
+        // Map USER to INFO so user actions appear in table
+        log_level = LOG_LEVEL_INFO;
+    } else {                        // LV_LOG_LEVEL_TRACE (0) and others
+        log_level = LOG_LEVEL_DEBUG;
+    }
+    
+    buffer_add_entry(LOG_SOURCE_LVGL, log_level, buf);
+}
+
+// ============================================================================
+// PUBLIC API IMPLEMENTATION
+// ============================================================================
+
+esp_err_t dlogger_init(void) {
+    // Allocate buffers (prefer PSRAM)
+    size_t buffer_size = LOG_BUFFER_CAPACITY * sizeof(dlogger_entry_t);
+    
+    dlogger_ctx.buffer_a = (dlogger_entry_t*)heap_caps_malloc(
+        buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    dlogger_ctx.buffer_b = (dlogger_entry_t*)heap_caps_malloc(
+        buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    
+    // Fall back to SRAM if PSRAM fails
+    if (!dlogger_ctx.buffer_a || !dlogger_ctx.buffer_b) {
+        ESP_LOGE(TAG, "PSRAM allocation failed, using SRAM");
+        if (dlogger_ctx.buffer_a) free(dlogger_ctx.buffer_a);
+        if (dlogger_ctx.buffer_b) free(dlogger_ctx.buffer_b);
+        
+        dlogger_ctx.buffer_a = (dlogger_entry_t*)malloc(buffer_size);
+        dlogger_ctx.buffer_b = (dlogger_entry_t*)malloc(buffer_size);
+        
+        if (!dlogger_ctx.buffer_a || !dlogger_ctx.buffer_b) {
+            ESP_LOGE(TAG, "SRAM allocation failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    
+    // Initialize buffers
+    memset(dlogger_ctx.buffer_a, 0, buffer_size);
+    memset(dlogger_ctx.buffer_b, 0, buffer_size);
+    
+    // Create mutex
+    dlogger_ctx.mutex = xSemaphoreCreateMutex();
+    if (!dlogger_ctx.mutex) {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        free(dlogger_ctx.buffer_a);
+        free(dlogger_ctx.buffer_b);
         return ESP_ERR_NO_MEM;
     }
-
+    
+    // Start background flush task
+    dlogger_ctx.task_running = true;
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        flush_task_func,
+        "dlogger_flush",
+        4096,
+        NULL,
+        tskIDLE_PRIORITY + 1,
+        &dlogger_ctx.flush_task,
+        PRO_CPU_NUM
+    );
+    
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create flush task");
+        vSemaphoreDelete(dlogger_ctx.mutex);
+        free(dlogger_ctx.buffer_a);
+        free(dlogger_ctx.buffer_b);
+        return ESP_FAIL;
+    }
+    
+    // Hook into logging systems
+    dlogger_hook_esp_log();
+    dlogger_hook_lvgl_log();
+    
+    // Log initialization
+    dlogger_log("DLogger initialized with double buffer system");
+    ESP_LOGI(TAG, "Double buffer logging initialized. Capacity: %d entries", 
+             LOG_BUFFER_CAPACITY);
+    
     return ESP_OK;
 }
 
-// --- Handlers ---
-
-// ESP-IDF Log Handler
-static int dlogger_esp_log_handler(const char *format, va_list args) {
-    char buffer[256];
-    vsnprintf(buffer, sizeof(buffer), format, args);
+esp_err_t dlogger_log(const char *format, ...) {
+    char message[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
     
-    // Strip trailing newline because dlogger_log adds one or handles it
-    size_t len = strlen(buffer);
-    if (len > 0 && buffer[len - 1] == '\n') {
-        buffer[len - 1] = '\0';
-    }
-
-    dlogger_log("%s", buffer);
-    return vprintf(format, args); // Also print to serial
+    bool success = buffer_add_entry(LOG_SOURCE_USER, LOG_LEVEL_INFO, message);
+    return success ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-// LVGL v9 Log Handler
-static void dlogger_lvgl_log_handler(lv_log_level_t level, const char * buf) {
-    // LVGL 9 passes the pre-formatted string in 'buf'
-    // We just prepend a tag
-    dlogger_log("[LVGL] %s", buf);
+size_t dlogger_get_raw_entries(dlogger_entry_t *dest, size_t max_entries) {
+    if (!dest || max_entries == 0) return 0;
+    
+    size_t entries_copied = 0;
+    
+    xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+    
+    // Get active buffer
+    dlogger_entry_t *active_buffer = (dlogger_ctx.active == 0) ? 
+                                    dlogger_ctx.buffer_a : dlogger_ctx.buffer_b;
+    
+    // Copy in reverse order (newest first)
+    for (size_t i = 0; i < dlogger_ctx.fill_idx && i < max_entries; i++) {
+        size_t src_idx = dlogger_ctx.fill_idx - 1 - i;
+        memcpy(&dest[i], &active_buffer[src_idx], sizeof(dlogger_entry_t));
+        entries_copied++;
+    }
+    
+    xSemaphoreGive(dlogger_ctx.mutex);
+    
+    return entries_copied;
+}
+
+void dlogger_get_stats(dlogger_stats_t *stats) {
+    if (!stats) return;
+    
+    xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+    
+    stats->entries_in_buffer = dlogger_ctx.fill_idx;
+    stats->flush_pending = dlogger_ctx.flush_pending;
+    stats->active_buffer = dlogger_ctx.active;
+    stats->total_capacity = dlogger_ctx.capacity;
+    
+    xSemaphoreGive(dlogger_ctx.mutex);
+}
+
+esp_err_t dlogger_force_flush(void) {
+    esp_err_t result = ESP_FAIL;
+    
+    xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+    
+    if (!dlogger_ctx.flush_pending && dlogger_ctx.fill_idx > 0) {
+        dlogger_ctx.active = !dlogger_ctx.active;
+        dlogger_ctx.flush_pending = true;
+        dlogger_ctx.fill_idx = 0;
+        result = ESP_OK;
+    } else {
+        result = ESP_ERR_INVALID_STATE;
+    }
+    
+    xSemaphoreGive(dlogger_ctx.mutex);
+    
+    return result;
 }
 
 void dlogger_hook_esp_log(void) {
-    esp_log_set_vprintf(dlogger_esp_log_handler);
+    esp_log_set_vprintf(esp_log_handler);
 }
 
 void dlogger_hook_lvgl_log(void) {
-    lv_log_register_print_cb(dlogger_lvgl_log_handler);
+    lv_log_register_print_cb(lvgl_log_handler);
 }
 
 const char* dlogger_get_current_log_filepath(void) {
-    return current_log_filepath;
+    return current_log_path;
 }
 
-esp_err_t dlogger_init(void) {
-    esp_err_t err = ESP_OK;
-
-    // 1. Create Ring Buffer
-    log_ringbuf = xRingbufferCreate(LOG_RINGBUF_SIZE, RINGBUF_TYPE_NOSPLIT);
-    if (log_ringbuf == NULL) {
-        ESP_LOGE(TAG, "Failed to create RingBuffer");
-        return ESP_ERR_NO_MEM;
-    }
-
-    // 2. Initialize File System State
-    if (find_latest_logfile() != ESP_OK) {
-        ESP_LOGI(TAG, "No log file found, creating new.");
-        err = create_new_logfile();
-    }
-
-    // 3. Start Background Task
-    if (err == ESP_OK) {
-        BaseType_t res = xTaskCreate(dlogger_task, "dlogger_task", LOG_TASK_STACK, NULL, LOG_TASK_PRIO, NULL);
-        if (res != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create logging task");
-            return ESP_FAIL;
-        }
-
-        // 4. Hook inputs
-        dlogger_hook_esp_log();
-        dlogger_hook_lvgl_log();
-        ESP_LOGI(TAG, "dlogger initialized (RingBuffer: %d bytes)", LOG_RINGBUF_SIZE);
+void dlogger_deinit(void) {
+    // Stop background task
+    dlogger_ctx.task_running = false;
+    if (dlogger_ctx.flush_task) {
+        vTaskDelete(dlogger_ctx.flush_task);
+        dlogger_ctx.flush_task = NULL;
     }
     
-    return err;
+    // Flush any remaining logs
+    xSemaphoreTake(dlogger_ctx.mutex, portMAX_DELAY);
+    
+    if (dlogger_ctx.fill_idx > 0) {
+        dlogger_entry_t *active_buffer = (dlogger_ctx.active == 0) ? 
+                                        dlogger_ctx.buffer_a : dlogger_ctx.buffer_b;
+        flush_buffer_to_file(active_buffer, dlogger_ctx.fill_idx);
+    }
+    
+    if (dlogger_ctx.flush_pending) {
+        dlogger_entry_t *inactive_buffer = (dlogger_ctx.active == 0) ? 
+                                          dlogger_ctx.buffer_b : dlogger_ctx.buffer_a;
+        flush_buffer_to_file(inactive_buffer, dlogger_ctx.capacity);
+    }
+    
+    xSemaphoreGive(dlogger_ctx.mutex);
+    
+    // Cleanup
+    close_log_file();
+    
+    if (dlogger_ctx.buffer_a) free(dlogger_ctx.buffer_a);
+    if (dlogger_ctx.buffer_b) free(dlogger_ctx.buffer_b);
+    dlogger_ctx.buffer_a = NULL;
+    dlogger_ctx.buffer_b = NULL;
+    
+    if (dlogger_ctx.mutex) {
+        vSemaphoreDelete(dlogger_ctx.mutex);
+        dlogger_ctx.mutex = NULL;
+    }
 }
