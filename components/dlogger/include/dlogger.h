@@ -114,9 +114,16 @@ esp_err_t dlogger_force_flush(void);
 void dlogger_hook_esp_log(void);
 
 /**
- * @brief Hook into LVGL logging system (v9 signature)
+ * @brief Add a raw log entry from any source
+ * 
+ * This is the generic entry point for adding logs to the buffer.
+ * 
+ * @param source The log source (ESP, LVGL, USER)
+ * @param level The log level (ERROR, WARN, INFO, DEBUG)
+ * @param message The log message string
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if buffer full
  */
-void dlogger_hook_lvgl_log(void);
+esp_err_t dlogger_add_entry(dlogger_source_t source, dlogger_level_t level, const char *message);
 
 /**
  * @brief Get current log file path

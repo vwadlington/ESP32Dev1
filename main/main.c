@@ -8,6 +8,27 @@
 #include "lvgl.h"
 #include <string.h>
 
+static void lvgl_log_handler(lv_log_level_t lvgl_level, const char *buf) {
+    uint8_t log_level = LOG_LEVEL_INFO;
+    
+    // Map LVGL levels based on observed serial output:
+    // level 0 = Trace, 1 = Info, 2 = Warn, 3 = Error, 4 = User
+    if (lvgl_level == 3) {          // LV_LOG_LEVEL_ERROR
+        log_level = LOG_LEVEL_ERROR;
+    } else if (lvgl_level == 2) {   // LV_LOG_LEVEL_WARN
+        log_level = LOG_LEVEL_WARN;
+    } else if (lvgl_level == 1) {   // LV_LOG_LEVEL_INFO
+        log_level = LOG_LEVEL_INFO;
+    } else if (lvgl_level == 4) {   // LV_LOG_LEVEL_USER
+        // Map USER to INFO so user actions appear in table
+        log_level = LOG_LEVEL_INFO;
+    } else {                        // LV_LOG_LEVEL_TRACE (0) and others
+        log_level = LOG_LEVEL_DEBUG;
+    }
+    
+    dlogger_add_entry(LOG_SOURCE_LVGL, log_level, buf);
+}
+
 static void brightness_wrapper(uint8_t val) {
     bsp_display_brightness_set(val);
 }
@@ -30,7 +51,7 @@ void app_main(void)
     bsp_display_start();
     
     /* Re-hook LVGL logs after BSP initialization (BSP might override) */
-    dlogger_hook_lvgl_log();
+    lv_log_register_print_cb(lvgl_log_handler);
     
     /* Register hardware-specific brightness control */
     minigui_register_brightness_cb(brightness_wrapper);

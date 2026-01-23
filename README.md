@@ -26,12 +26,38 @@ Captures and redirects all system and UI output to a circular file system.
 * **Rotation:** Max 2 files, 1MB each, stored on the `/storage` partition.
 * **Observability:** Logs are viewable via a dedicated **Logs Screen** in the UI with category filtering.
 
-### 3. Planned Screen Layouts
-| Screen | Features |
-| :--- | :--- |
-| **Home** | Outside/Inside Temp, Weather outlook, Clock. |
-| **Logs** | Table/Grid view of file logs with filter (ESP/LVGL/USER). |
-| **Settings** | Brightness slider, Wi-Fi configuration, System info. |
+## 🚀 Getting Started
+
+This project is built with the ESP-IDF framework. Ensure you have the ESP-IDF environment set up correctly before proceeding.
+
+1.  **Clone the Repository:**
+    ```bash
+    git clone --recursive https://github.com/your-repo/ESP32Dev1.git
+    cd ESP32Dev1
+    ```
+
+2.  **Install Submodules (if not cloned recursively):**
+    ```bash
+    git submodule update --init --recursive
+    ```
+
+3.  **Build the Application:**
+    ```bash
+    idf.py build
+    ```
+
+4.  **Flash and Monitor:**
+    ```bash
+    idf.py flash monitor
+    ```
+
+### 3. Screen Layouts & Status
+
+| Screen   | Features                                                     | Status                                                       |
+| :------- | :----------------------------------------------------------- | :----------------------------------------------------------- |
+| **Home** | Placeholder cards for Indoor/Outdoor Temp and general status.  | 💄 **Partial (UI Only)**<br />*Static cards are displayed. No live data.* |
+| **Logs** | Table view of system logs with real-time filtering by source (ESP/LVGL/USER). | ✅ **Complete**<br />*Fully functional log viewer.*             |
+| **Settings**| Brightness control slider.<br />Placeholder for Wi-Fi configuration. | 🌓 **Partial**<br />*Brightness control is functional. Wi-Fi is not implemented.* |
 
 ## 📂 Project Layout
 ```text
@@ -44,6 +70,20 @@ Captures and redirects all system and UI output to a circular file system.
 │   ├── main.c         # Hardware init and app orchestration
 │   └── idf_component  # Managed BSP dependencies
 └── partitions.csv     # Custom flash layout (16MB config)
+
+## ⚙️ Configuration
+
+### Partition Table
+The project uses a custom `partitions.csv` to allocate storage for the logging system.
+- **storage**: 1MB SPIFFS partition mounted at `/storage`.
+- **nvs**: Default non-volatile storage.
+- **factory**: Main application binary.
+
+### Logging Configuration
+The `dlogger` component is configured in `dlogger.c`:
+- **Buffer Size:** 512 entries (Double buffered in PSRAM).
+- **Flush Interval:** 500ms.
+- **File Rotation:** Logs are saved to `/storage/latest.log`.
 
 🏗️ Component Architecture
 Layered Design Principle

@@ -10,7 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
-#include "lvgl.h"
+
 
 // ============================================================================
 // INTERNAL CONSTANTS AND TYPES
@@ -248,29 +248,7 @@ static int esp_log_handler(const char *format, va_list args) {
     return vprintf(format, args);
 }
 
-/**
- * @brief LVGL v9 log handler - maps LVGL levels to our levels
- */
-static void lvgl_log_handler(lv_log_level_t lvgl_level, const char *buf) {
-    uint8_t log_level = LOG_LEVEL_INFO;
-    
-    // Map LVGL levels based on observed serial output:
-    // level 0 = Trace, 1 = Info, 2 = Warn, 3 = Error, 4 = User
-    if (lvgl_level == 3) {          // LV_LOG_LEVEL_ERROR
-        log_level = LOG_LEVEL_ERROR;
-    } else if (lvgl_level == 2) {   // LV_LOG_LEVEL_WARN
-        log_level = LOG_LEVEL_WARN;
-    } else if (lvgl_level == 1) {   // LV_LOG_LEVEL_INFO
-        log_level = LOG_LEVEL_INFO;
-    } else if (lvgl_level == 4) {   // LV_LOG_LEVEL_USER
-        // Map USER to INFO so user actions appear in table
-        log_level = LOG_LEVEL_INFO;
-    } else {                        // LV_LOG_LEVEL_TRACE (0) and others
-        log_level = LOG_LEVEL_DEBUG;
-    }
-    
-    buffer_add_entry(LOG_SOURCE_LVGL, log_level, buf);
-}
+
 
 // ============================================================================
 // PUBLIC API IMPLEMENTATION
@@ -335,7 +313,7 @@ esp_err_t dlogger_init(void) {
     
     // Hook into logging systems
     dlogger_hook_esp_log();
-    dlogger_hook_lvgl_log();
+    
     
     // Log initialization
     dlogger_log("DLogger initialized with double buffer system");
@@ -415,8 +393,9 @@ void dlogger_hook_esp_log(void) {
     esp_log_set_vprintf(esp_log_handler);
 }
 
-void dlogger_hook_lvgl_log(void) {
-    lv_log_register_print_cb(lvgl_log_handler);
+esp_err_t dlogger_add_entry(dlogger_source_t source, dlogger_level_t level, const char *message) {
+    bool success = buffer_add_entry(source, level, message);
+    return success ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 const char* dlogger_get_current_log_filepath(void) {
